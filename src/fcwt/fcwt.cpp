@@ -37,6 +37,7 @@ limitations under the License.
 */
 
 #include "fcwt.h"
+#include <iostream>
 
 Morlet::Morlet(float bandwidth) {
     four_wavelen = 0.9876f;
@@ -207,7 +208,7 @@ void FCWT::daughter_wavelet_multiplication(fftwf_complex *input, fftwf_complex *
         __m256* O8 = (__m256*)output;
         __m256* I8 = (__m256*)input;
         __m256 step4 = _mm256_set1_ps(step);
-        __m256 offset = _mm256_set_ps(3,3,2,2,1,1,0,0);
+        __m256 offset = _mm256_set_ps(3,3,2,2,1,1,0,0); 
         __m256 maximum = _mm256_set1_ps(isizef-1);
         
         int athreads = min(threads,max(1,endpoint4/16));
@@ -445,15 +446,19 @@ void FCWT::fft_normalize(complex<float>* out, int size) {
 }
 
 void FCWT::cwt(float *pinput, int psize, complex<float>* poutput, Scales *scales, bool complexinput) {
-    
+    // Allocate intermediate FFT buffers
     fftwf_complex *Ihat, *O1;
     size = psize;
-    
-    //Find nearest power of 2
+
+    std::cout << "Input size: " << size << std::endl;
+
+    // Find the nearest power of 2 greater than or equal to the input size for efficient FFT
     const int nt = find2power(size);
     const int newsize = 1 << nt;
 
-    //Initialize intermediate result
+    std::cout << "Using fft size: " << newsize << std::endl;
+
+    // Allocate memory for FFT input and output, aligned for SIMD if possible
     #ifdef _WIN32
         Ihat = (fftwf_complex*)_aligned_malloc(newsize*sizeof(fftwf_complex), 32);
         O1 = (fftwf_complex*)_aligned_malloc(newsize*sizeof(fftwf_complex), 32);
@@ -462,62 +467,68 @@ void FCWT::cwt(float *pinput, int psize, complex<float>* poutput, Scales *scales
         O1 = (fftwf_complex*)aligned_alloc(32, newsize*sizeof(fftwf_complex));
     #endif
 
-    //Copy input to new input buffer
+    // Zero-initialize the FFT buffers
     memset(Ihat,0,sizeof(fftwf_complex)*newsize);
     memset(O1,0,sizeof(fftwf_complex)*newsize);
-    
+
     #ifndef SINGLE_THREAD
-        //Initialize FFTW plans
+        // Set the number of OpenMP threads for parallel FFT computation
         omp_set_num_threads(threads);
-        
-        //Initialize FFTW plans
+        // Initialize FFTW threading support
         fftwf_init_threads();
-    
         fftwf_plan_with_nthreads(threads);
     #endif
-    
-    fftwf_plan pinv;
-    fftwf_plan p;
-    
-    // //Load optimization schemes if necessary
+
+    fftwf_plan pinv; // Inverse FFT plan
+    fftwf_plan p;    // Forward FFT plan
+
+    // Load FFTW optimization plans (wisdom) if available
     load_FFT_optimization_plan();
 
-    // //Perform forward FFT on input signal
+    // Prepare input buffer for FFT
     float *input;
     if(complexinput) {
+        // If input is complex, allocate buffer and copy as complex floats
         input = (float*)calloc(newsize,sizeof(complex<float>));
         memcpy(input,pinput,sizeof(complex<float>)*size);
+        // Create FFT plan for complex-to-complex transform
         p = fftwf_plan_dft_1d(newsize, (fftwf_complex*)input, Ihat, FFTW_FORWARD, FFTW_ESTIMATE);
     } else {
+        // If input is real, allocate buffer and copy as floats
         input = (float*)malloc(newsize*sizeof(float));
         memset(input,0,newsize*sizeof(float));
         memcpy(input,pinput,sizeof(float)*size);
+        // Create FFT plan for real-to-complex transform
         p = fftwf_plan_dft_r2c_1d(newsize, input, Ihat, FFTW_ESTIMATE);
     }
 
+    // Execute the forward FFT
     fftwf_execute(p);
     fftwf_destroy_plan(p);
     free(input);
-    
+
+    // Create inverse FFT plan for later use
     pinv = fftwf_plan_dft_1d(newsize, O1, (fftwf_complex*)poutput, FFTW_BACKWARD, FFTW_ESTIMATE);
-    
-    //Generate mother wavelet function
+
+    // Generate the mother wavelet in the frequency domain for the given FFT size
     wavelet->generate(newsize);
-    
+
+    // Mirror the positive frequency components to the negative side (Hermitian symmetry)
     for(int i=1; i<(newsize>>1); i++) {
         Ihat[newsize-i][0] = Ihat[i][0];
         Ihat[newsize-i][1] = -Ihat[i][1];
     }
-    
+
     complex<float> *out = poutput;
-    
+
+    // Loop over all scales and perform convolution in the frequency domain
     for(int i = 0; i < scales->nscales; i++) {
-        //FFT-base convolution in the frequency domain
+        // Perform FFT-based convolution for each scale
         convolve(pinv, Ihat, O1, out, wavelet, size, newsize, scales->scales[i], i==(scales->nscales-1));
-        out = out + size;
+        out = out + size; // Advance output pointer for next scale
     }
-    
-    // //Cleanup
+
+    // Cleanup: destroy FFTW plans and free allocated memory
     fftwf_destroy_plan(pinv);
     #ifdef _WIN32
         _aligned_free(Ihat);
