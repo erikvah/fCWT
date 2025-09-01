@@ -7,7 +7,7 @@ def optimize_fcwt(fcwt_obj: fcwt.FCWT, size: int):
 
 if __name__ == "__main__":
     threads = 4
-    N = 2**14
+    N = 2**11
     wavelet = fcwt.Morlet(2)
     obj = fcwt.FCWT(wavelet, threads, True, False)
     optimize_fcwt(obj, N)

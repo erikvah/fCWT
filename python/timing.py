@@ -6,8 +6,12 @@ def tick():
     global __t
     __t = time.time()
 
-def tock(s):
+def tock(s, supress=False):
     global __t
     t_new = time.time()
-    print(f"Lap \"{s}\": {(t_new - __t) * 1000} ms")
+    dur = (t_new - __t) * 1000
+    if not supress:
+        print(f"Lap \"{s}\": {dur} ms")
     __t = t_new
+
+    return dur
